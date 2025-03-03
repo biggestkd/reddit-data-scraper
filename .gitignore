@@ -1,5 +1,5 @@
 .idea/*
 *.iml
-r_Battlefield_posts.jsonl
+datasets/r_Battlefield_posts.jsonl
 RS_2025-01.zst
 reddit-data-scraper

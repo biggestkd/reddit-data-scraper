@@ -65,9 +65,9 @@ def main():
     all_reddit_data = load_reddit_data(DATA_PATH)
 
     print("Calculating posts per month...")
-    # monthly_counts = generate_count_posts_per_month(all_reddit_data)
-    #
-    # save_to_csv(monthly_counts, filename="reddit_counts_per_month.csv")
+    monthly_counts = generate_count_posts_per_month(all_reddit_data)
+
+    save_to_csv(monthly_counts, filename="reddit_counts_per_month.csv")
 
 
 if __name__ == "__main__":
