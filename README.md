@@ -25,3 +25,7 @@ Once the VM is provisioned:
     python main.py
     ```
 
+
+## Dataset
+The dataset was pulled from this source - https://github.com/ArthurHeitmann/arctic_shift/blob/master/README.md
+
