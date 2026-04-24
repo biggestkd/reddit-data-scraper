@@ -4,7 +4,7 @@ function main(workbook: ExcelScript.Workbook) {
   // Adjust these to match your workbook's column layout.
   const personName               = "Goode, Brett";  // Person to filter by
   const flagValue                = "Y";             // Required flag value (Group 1 only)
-  const flagColIdx               = 38;              // 0-based: Y/N flag column (col AM)
+  const discussionNeeded               = 38;              // 0-based: Y/N flag column (col AM)
   const discussionMc2LeaderColIdx = 33;             // 0-based: discussionMc2Leader column (col AH)
   const mc2leaderColIdx          = 8;               // 0-based: mc2leader column (col I)
   const outputName               = "Issues & MAPs";
@@ -116,13 +116,14 @@ function main(workbook: ExcelScript.Workbook) {
   const fr = ensureAutoFilter(sourceSheet);
 
   af.clearCriteria();
-  af.apply(fr, flagColIdx,                { filterOn: ExcelScript.FilterOn.values, values: [flagValue]   });
+  af.apply(fr, discussionNeeded,                { filterOn: ExcelScript.FilterOn.values, values: [flagValue]   });
   af.apply(fr, discussionMc2LeaderColIdx, { filterOn: ExcelScript.FilterOn.values, values: [personName]  });
 
   const group1 = collectVisible(sourceSheet);       // includes header row
 
   // ── 4. Group 2 — mc2leader = personName  AND  discussionMc2Leader ≠ personName ──
   af.clearCriteria();
+  af.apply(fr, discussionNeeded, { filterOn: ExcelScript.FilterOn.values, values: [flagValue] });
   af.apply(fr, mc2leaderColIdx,           { filterOn: ExcelScript.FilterOn.values, values: [personName] });
   af.apply(fr, discussionMc2LeaderColIdx, { filterOn: ExcelScript.FilterOn.custom, criterion1: `<>${personName}` });
 
@@ -142,3 +143,5 @@ function main(workbook: ExcelScript.Workbook) {
   // ── 7. Activate output ────────────────────────────────────────────────────
   outputSheet.activate();
 }
+
+
