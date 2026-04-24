@@ -1,27 +1,19 @@
 function main(workbook: ExcelScript.Workbook) {
 
   // ── Configuration ─────────────────────────────────────────────────────────
-  // Adjust these to match your workbook's column layout and filter values.
-  const personName   = "Goode, Brett";  // Name to filter by
-  const flagValue    = "Y";             // Flag column value to include
-  const flagColIdx   = 38;              // 0-based column index for Y/N flag (col AM)
-  const nameColIdx1  = 33;              // 0-based column index for name in Group 1 filter (col AH)
-  const nameColIdx2  = 8;               // 0-based column index for name in Group 2 filter (col I)
-  const outputName   = "Issues & MAPs";
+  // Adjust these to match your workbook's column layout.
+  const personName               = "Goode, Brett";  // Person to filter by
+  const flagValue                = "Y";             // Required flag value (Group 1 only)
+  const flagColIdx               = 38;              // 0-based: Y/N flag column (col AM)
+  const discussionMc2LeaderColIdx = 33;             // 0-based: discussionMc2Leader column (col AH)
+  const mc2leaderColIdx          = 8;               // 0-based: mc2leader column (col I)
+  const outputName               = "Issues & MAPs";
 
-  // All auxiliary sheets to remove before processing; missing ones are skipped.
+  // Auxiliary sheets to remove before processing; missing ones are silently skipped.
   const sheetsToRemove = [
-    "Data Pull - MAP Compliance",
-    "Gov calls",
-    "Issues with No MAPs",
-    "Overview ",
-    "Issues with one MAP",
-    "Issue baseline (6-5)",
-    "Dashboard",
-    "Sheet4",
-    "Overview - Arun",
-    "Other",
-    "Issue-RISK",
+    "Data Pull - MAP Compliance", "Gov calls", "Issues with No MAPs",
+    "Overview ", "Issues with one MAP", "Issue baseline (6-5)",
+    "Dashboard", "Sheet4", "Overview - Arun", "Other", "Issue-RISK",
   ];
 
   // ── Helpers ───────────────────────────────────────────────────────────────
@@ -31,109 +23,122 @@ function main(workbook: ExcelScript.Workbook) {
     if (sheet) sheet.delete();
   }
 
-  // Returns the autofilter range, initialising the filter on the used range
-  // header if it hasn't been set up yet.
-  function getFilterRange(sheet: ExcelScript.Worksheet): ExcelScript.Range {
+  // Replaces all formulas/Power Query results with their current computed values
+  // so subsequent filters operate on stable, non-refreshing data.
+  function snapshotAsValues(sheet: ExcelScript.Worksheet): void {
+    for (const table of sheet.getTables()) {
+      table.convertToRange();
+    }
+    const used = sheet.getUsedRange();
+    if (!used) return;
+    const values  = used.getValues();
+    const formats = used.getNumberFormats();
+    used.setValues(values  as (string | number | boolean)[][]);
+    used.setNumberFormats(formats as string[][]);
+  }
+
+  // Ensures an AutoFilter is initialised on the sheet and returns its range.
+  function ensureAutoFilter(sheet: ExcelScript.Worksheet): ExcelScript.Range {
     const af = sheet.getAutoFilter();
     const existing = af.getRange();
     if (existing) return existing;
-
     const used = sheet.getUsedRange();
     if (!used) throw new Error(`Sheet "${sheet.getName()}" has no data.`);
-    // Initialise autofilter on the full used range
     af.apply(used);
     return af.getRange();
   }
 
-  // Copies all visible (non-filtered-out) rows from src into dst at A1.
-  // If no autofilter is active every row is treated as visible.
-  function copyVisibleRows(
-    src: ExcelScript.Worksheet,
-    dst: ExcelScript.Worksheet
-  ): void {
-    const used = src.getUsedRange();
-    if (!used) return;
+  // Returns values and number formats for every currently-visible row.
+  // Collects row indices from the RangeAreas directly so the output is always
+  // contiguous — no blank rows regardless of which rows the filter hides.
+  // When skipFirstRow=true the header (row 0 of the used range) is omitted.
+  function collectVisible(
+    sheet: ExcelScript.Worksheet,
+    skipFirstRow: boolean = false
+  ): { values: (string | number | boolean)[][], formats: string[][] } {
+    const used = sheet.getUsedRange();
+    if (!used) return { values: [], formats: [] };
 
-    let visible: ExcelScript.RangeAreas;
+    const allValues  = used.getValues()        as (string | number | boolean)[][];
+    const allFormats = used.getNumberFormats() as string[][];
+
+    let areas: ExcelScript.RangeAreas;
     try {
-      visible = used.getSpecialCells(ExcelScript.SpecialCellType.visible);
+      areas = used.getSpecialCells(ExcelScript.SpecialCellType.visible);
     } catch {
-      return; // Nothing visible
+      return { values: [], formats: [] };
     }
 
-    dst.getRange("A1").copyFrom(
-      visible,
-      ExcelScript.RangeCopyType.all,
-      false,
-      false
-    );
-    
+    // Convert absolute row indices to used-range-relative indices.
+    const base = used.getRowIndex();
+    const seen = new Set<number>();
+    for (const area of areas.getAreas()) {
+      const rel = area.getRowIndex() - base;
+      for (let r = 0; r < area.getRowCount(); r++) seen.add(rel + r);
     }
 
-  // Appends all data rows (skipping the header) from src to the bottom of dst.
-  function appendDataRows(
-    src: ExcelScript.Worksheet,
-    dst: ExcelScript.Worksheet
-  ): void {
-    const srcUsed = src.getUsedRange();
-    if (!srcUsed || srcUsed.getRowCount() < 2) return;
+    const indices = Array.from(seen)
+      .sort((a, b) => a - b)
+      .filter(i => i >= (skipFirstRow ? 1 : 0));
 
-    const allValues  = srcUsed.getValues() as (string | number | boolean)[][];
-    const allFormats = srcUsed.getNumberFormats() as string[][];
-    const dataValues  = allValues.slice(1);
-    const dataFormats = allFormats.slice(1);
-    if (dataValues.length === 0) return;
-
-    const colCount  = dataValues[0].length;
-    const dstUsed   = dst.getUsedRange();
-    const startRow  = dstUsed ? dstUsed.getRowCount() : 0;
-
-    dst.getRangeByIndexes(startRow, 0, dataValues.length,  colCount).setValues(dataValues);
-    dst.getRangeByIndexes(startRow, 0, dataFormats.length, colCount).setNumberFormats(dataFormats);
+    return {
+      values:  indices.map(i => allValues[i]),
+      formats: indices.map(i => allFormats[i]),
+    };
   }
 
-  // ── 1. Capture source sheet before any deletes ────────────────────────────
+  // Writes a collected dataset to dst.
+  // append=true places data immediately after existing content (no gap).
+  function writeData(
+    data: { values: (string | number | boolean)[][], formats: string[][] },
+    dst: ExcelScript.Worksheet,
+    append: boolean = false
+  ): void {
+    const { values, formats } = data;
+    if (values.length === 0) return;
+    const cols    = values[0].length;
+    const dstUsed = dst.getUsedRange();
+    const row     = (append && dstUsed) ? dstUsed.getRowCount() : 0;
+    dst.getRangeByIndexes(row, 0, values.length,  cols).setValues(values);
+    dst.getRangeByIndexes(row, 0, formats.length, cols).setNumberFormats(formats);
+  }
+
+  // ── 1. Freeze source data as static values ────────────────────────────────
+  // Must run before any filtering so Power Query / formula results are stable.
   const sourceSheet = workbook.getActiveWorksheet();
+  snapshotAsValues(sourceSheet);
 
   // ── 2. Remove auxiliary sheets ────────────────────────────────────────────
   for (const name of sheetsToRemove) safeDelete(name);
 
-  // ── 3. Group 1 — flag = Y  AND  name matches on nameColIdx1 ──────────────
-  const af1 = sourceSheet.getAutoFilter();
-  const fr1 = getFilterRange(sourceSheet);
+  // ── 3. Group 1 — flag = Y  AND  discussionMc2Leader = personName ──────────
+  const af = sourceSheet.getAutoFilter();
+  const fr = ensureAutoFilter(sourceSheet);
 
-  af1.clearCriteria();
-  af1.apply(fr1, flagColIdx,  { filterOn: ExcelScript.FilterOn.values, values: [flagValue]  });
-  af1.apply(fr1, nameColIdx1, { filterOn: ExcelScript.FilterOn.values, values: [personName] });
+  af.clearCriteria();
+  af.apply(fr, flagColIdx,                { filterOn: ExcelScript.FilterOn.values, values: [flagValue]   });
+  af.apply(fr, discussionMc2LeaderColIdx, { filterOn: ExcelScript.FilterOn.values, values: [personName]  });
 
-  safeDelete("Group 1");
-  const group1 = workbook.addWorksheet("Group 1");
-  copyVisibleRows(sourceSheet, group1);
+  const group1 = collectVisible(sourceSheet);       // includes header row
 
-  // ── 4. Group 2 — name matches on nameColIdx2  AND  flag = Y ──────────────
-  af1.clearCriteria();
-  af1.apply(fr1, nameColIdx2, { filterOn: ExcelScript.FilterOn.values, values: [personName] });
-  af1.apply(fr1, flagColIdx,  { filterOn: ExcelScript.FilterOn.values, values: [flagValue]  });
+  // ── 4. Group 2 — mc2leader = personName  AND  discussionMc2Leader ≠ personName ──
+  af.clearCriteria();
+  af.apply(fr, mc2leaderColIdx,           { filterOn: ExcelScript.FilterOn.values, values: [personName] });
+  af.apply(fr, discussionMc2LeaderColIdx, { filterOn: ExcelScript.FilterOn.custom, criterion1: `<>${personName}` });
 
-  safeDelete("Group 2");
-  const group2 = workbook.addWorksheet("Group 2");
-  copyVisibleRows(sourceSheet, group2);
+  const group2 = collectVisible(sourceSheet, true); // skips header row (already in group1)
 
-  af1.clearCriteria();
+  af.clearCriteria();
 
-  // ── 5. Merge into output sheet ────────────────────────────────────────────
+  // ── 5. Write output — Group 1 then Group 2, guaranteed no blank rows ───────
   safeDelete(outputName);
   const outputSheet = workbook.addWorksheet(outputName);
+  writeData(group1, outputSheet);               // header + Group 1 data rows
+  writeData(group2, outputSheet, true);         // Group 2 data rows appended immediately after
 
-  copyVisibleRows(group1, outputSheet); // Full copy of Group 1 (header + data)
-  appendDataRows(group2, outputSheet);  // Append Group 2 data rows (no duplicate header)
-
-  // ── 6. Tear down temp sheets and source sheet ─────────────────────────────
-  // group1.delete();
-  // group2.delete();
+  // ── 6. Delete source sheet ────────────────────────────────────────────────
   safeDelete("Data Pull");
 
-  // ── 7. Land on the finished sheet ─────────────────────────────────────────
+  // ── 7. Activate output ────────────────────────────────────────────────────
   outputSheet.activate();
 }
-
