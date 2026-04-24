@@ -60,8 +60,15 @@ function main(workbook: ExcelScript.Workbook) {
     } catch {
       return; // Nothing visible
     }
-    dst.getRange("A1").copyFrom(visible, ExcelScript.CopyType.all, false, false);
-  }
+
+    dst.getRange("A1").copyFrom(
+      visible,
+      ExcelScript.RangeCopyType.all,
+      false,
+      false
+    );
+    
+    }
 
   // Appends all data rows (skipping the header) from src to the bottom of dst.
   function appendDataRows(
@@ -122,10 +129,11 @@ function main(workbook: ExcelScript.Workbook) {
   appendDataRows(group2, outputSheet);  // Append Group 2 data rows (no duplicate header)
 
   // ── 6. Tear down temp sheets and source sheet ─────────────────────────────
-  group1.delete();
-  group2.delete();
+  // group1.delete();
+  // group2.delete();
   safeDelete("Data Pull");
 
   // ── 7. Land on the finished sheet ─────────────────────────────────────────
   outputSheet.activate();
 }
+
