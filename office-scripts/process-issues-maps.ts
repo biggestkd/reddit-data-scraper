@@ -1,8 +1,8 @@
-function main(workbook: ExcelScript.Workbook) {
+function main(workbook: ExcelScript.Workbook, personName: string = "Goode, Brett") {
 
   // ── Configuration ─────────────────────────────────────────────────────────
   // Adjust these to match your workbook's column layout.
-  const personName               = "Goode, Brett";  // Person to filter by
+  // personName is passed as a parameter from the Excel "Run script" panel.
   const flagValue                = "Y";             // Required flag value (Group 1 only)
   const discussionNeeded               = 38;              // 0-based: Y/N flag column (col AM)
   const discussionMc2LeaderColIdx = 33;             // 0-based: discussionMc2Leader column (col AH)
