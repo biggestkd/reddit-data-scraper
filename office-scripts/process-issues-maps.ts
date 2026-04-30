@@ -30,7 +30,11 @@ function main(workbook: ExcelScript.Workbook, personName: string = "Goode, Brett
   }
 
   function normalizeHeader(h: string): string {
-    return h.toLowerCase().replace(/\s+/g, " ").trim();
+    return h
+      .toLowerCase()
+      .replace(/[–—]/g, "-")   // treat en-dash and em-dash the same as hyphen
+      .replace(/\s+/g, " ")
+      .trim();
   }
 
   function snapshotAsValues(sheet: ExcelScript.Worksheet): void {
@@ -160,14 +164,28 @@ function main(workbook: ExcelScript.Workbook, personName: string = "Goode, Brett
   if (!used) throw new Error("Output sheet has no data.");
 
   const outValues = used.getValues() as (string | number | boolean)[][];
+
+  // Build colIndexMap with two keys per column so lookups succeed whether or
+  // not the rename ran:
+  //   1. Full normalized header  e.g. "finalized map date - 5/15"
+  //   2. Suffix-stripped form    e.g. "finalized map date"
+  // normalizeHeader already converts en/em dashes to "-", so dash variants
+  // in the source workbook are handled automatically.
   const colIndexMap = new Map<string, number>();
-  (outValues[0] as string[]).forEach((h, i) => colIndexMap.set(String(h).trim(), i));
+  (outValues[0] as string[]).forEach((h, i) => {
+    const norm = normalizeHeader(String(h));
+    colIndexMap.set(norm, i);
+    const stripped = norm.replace(/\s*-\s*\d+\/\d+.*$/, "").trim();
+    if (stripped !== norm && !colIndexMap.has(stripped)) {
+      colIndexMap.set(stripped, i);
+    }
+  });
 
   const trimmed: (string | number | boolean)[][] = [requiredHeaders];
   for (let r = 1; r < outValues.length; r++) {
     trimmed.push(
       requiredHeaders.map(h => {
-        const idx = colIndexMap.get(h);
+        const idx = colIndexMap.get(normalizeHeader(h));
         return idx !== undefined ? outValues[r][idx] : "";
       })
     );
