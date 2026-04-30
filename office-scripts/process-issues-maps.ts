@@ -1,15 +1,21 @@
 function main(workbook: ExcelScript.Workbook, personName: string = "Goode, Brett") {
 
   // ── Configuration ─────────────────────────────────────────────────────────
-  // Adjust these to match your workbook's column layout.
-  // personName is passed as a parameter from the Excel "Run script" panel.
-  const flagValue                = "Y";             // Required flag value (Group 1 only)
-  const discussionNeeded               = 38;              // 0-based: Y/N flag column (col AM)
-  const discussionMc2LeaderColIdx = 33;             // 0-based: discussionMc2Leader column (col AH)
-  const mc2leaderColIdx          = 8;               // 0-based: mc2leader column (col I)
+  const flagValue                = "Y";
+  const discussionNeeded         = 38; // col AM
+  const discussionMc2LeaderColIdx = 33; // col AH
+  const mc2leaderColIdx          = 8;  // col I
   const outputName               = "Issues & MAPs";
 
-  // Auxiliary sheets to remove before processing; missing ones are silently skipped.
+  const dateColumns = [
+    "Issue Date Opened",
+    "Issue Due Date",
+    "MAP Opened Date",
+    "MAP Due Date",
+    "Finalized MAP Date",
+    "Issue – Farthest date"
+  ];
+
   const sheetsToRemove = [
     "Data Pull - MAP Compliance", "Gov calls", "Issues with No MAPs",
     "Overview ", "Issues with one MAP", "Issue baseline (6-5)",
@@ -23,125 +29,169 @@ function main(workbook: ExcelScript.Workbook, personName: string = "Goode, Brett
     if (sheet) sheet.delete();
   }
 
-  // Replaces all formulas/Power Query results with their current computed values
-  // so subsequent filters operate on stable, non-refreshing data.
+  function normalizeHeader(h: string): string {
+    return h.toLowerCase().replace(/\s+/g, " ").trim();
+  }
+
   function snapshotAsValues(sheet: ExcelScript.Worksheet): void {
     for (const table of sheet.getTables()) {
       table.convertToRange();
     }
+  }
+
+  function renameHeaderByName(
+    sheet: ExcelScript.Worksheet,
+    oldName: string,
+    newName: string
+  ): void {
     const used = sheet.getUsedRange();
     if (!used) return;
-    const values  = used.getValues();
-    const formats = used.getNumberFormats();
-    used.setValues(values  as (string | number | boolean)[][]);
-    used.setNumberFormats(formats as string[][]);
+    const headers = used.getRow(0).getValues()[0] as string[];
+    headers.forEach((h, i) => {
+      if (normalizeHeader(h) === normalizeHeader(oldName)) {
+        sheet.getCell(0, i).setValue(newName);
+      }
+    });
   }
 
-  // Ensures an AutoFilter is initialised on the sheet and returns its range.
-  function ensureAutoFilter(sheet: ExcelScript.Worksheet): ExcelScript.Range {
-    const af = sheet.getAutoFilter();
-    const existing = af.getRange();
-    if (existing) return existing;
-    const used = sheet.getUsedRange();
-    if (!used) throw new Error(`Sheet "${sheet.getName()}" has no data.`);
-    af.apply(used);
-    return af.getRange();
-  }
-
-  // Returns values and number formats for every currently-visible row.
-  // Collects row indices from the RangeAreas directly so the output is always
-  // contiguous — no blank rows regardless of which rows the filter hides.
-  // When skipFirstRow=true the header (row 0 of the used range) is omitted.
-  function collectVisible(
-    sheet: ExcelScript.Worksheet,
+  // Filters rows from in-memory arrays — avoids getSpecialCells/getAreas and
+  // the Power Automate payload size limit that comes with large RangeAreas.
+  function filterRows(
+    allValues: (string | number | boolean)[][],
+    allFormats: string[][],
+    conditions: ((row: (string | number | boolean)[]) => boolean)[],
     skipFirstRow: boolean = false
   ): { values: (string | number | boolean)[][], formats: string[][] } {
-    const used = sheet.getUsedRange();
-    if (!used) return { values: [], formats: [] };
+    const outValues:  (string | number | boolean)[][] = [];
+    const outFormats: string[][]                      = [];
+    const start = skipFirstRow ? 1 : 0;
 
-    const allValues  = used.getValues()        as (string | number | boolean)[][];
-    const allFormats = used.getNumberFormats() as string[][];
-
-    let areas: ExcelScript.RangeAreas;
-    try {
-      areas = used.getSpecialCells(ExcelScript.SpecialCellType.visible);
-    } catch {
-      return { values: [], formats: [] };
+    for (let r = start; r < allValues.length; r++) {
+      if (conditions.every(fn => fn(allValues[r]))) {
+        outValues.push(allValues[r]);
+        outFormats.push(allFormats[r]);
+      }
     }
-
-    // Convert absolute row indices to used-range-relative indices.
-    const base = used.getRowIndex();
-    const seen = new Set<number>();
-    for (const area of areas.getAreas()) {
-      const rel = area.getRowIndex() - base;
-      for (let r = 0; r < area.getRowCount(); r++) seen.add(rel + r);
-    }
-
-    const indices = Array.from(seen)
-      .sort((a, b) => a - b)
-      .filter(i => i >= (skipFirstRow ? 1 : 0));
-
-    return {
-      values:  indices.map(i => allValues[i]),
-      formats: indices.map(i => allFormats[i]),
-    };
+    return { values: outValues, formats: outFormats };
   }
 
-  // Writes a collected dataset to dst.
-  // append=true places data immediately after existing content (no gap).
   function writeData(
     data: { values: (string | number | boolean)[][], formats: string[][] },
     dst: ExcelScript.Worksheet,
     append: boolean = false
   ): void {
-    const { values, formats } = data;
-    if (values.length === 0) return;
-    const cols    = values[0].length;
+    if (data.values.length === 0) return;
+    const cols    = data.values[0].length;
     const dstUsed = dst.getUsedRange();
     const row     = (append && dstUsed) ? dstUsed.getRowCount() : 0;
-    dst.getRangeByIndexes(row, 0, values.length,  cols).setValues(values);
-    dst.getRangeByIndexes(row, 0, formats.length, cols).setNumberFormats(formats);
+    dst.getRangeByIndexes(row, 0, data.values.length,  cols).setValues(data.values);
+    dst.getRangeByIndexes(row, 0, data.formats.length, cols).setNumberFormats(data.formats);
   }
 
-  // ── 1. Freeze source data as static values ────────────────────────────────
-  // Must run before any filtering so Power Query / formula results are stable.
+  // ── 1. Freeze source data ─────────────────────────────────────────────────
   const sourceSheet = workbook.getActiveWorksheet();
   snapshotAsValues(sourceSheet);
+
+  renameHeaderByName(sourceSheet, "Finalized MAP Date - 5/15",   "Finalized MAP Date");
+  renameHeaderByName(sourceSheet, "Issue - Farthest date - 5/15", "Issue – Farthest date");
 
   // ── 2. Remove auxiliary sheets ────────────────────────────────────────────
   for (const name of sheetsToRemove) safeDelete(name);
 
-  // ── 3. Group 1 — flag = Y  AND  discussionMc2Leader = personName ──────────
-  const af = sourceSheet.getAutoFilter();
-  const fr = ensureAutoFilter(sourceSheet);
+  // ── 3. Read entire source sheet into memory once ──────────────────────────
+  const sourceUsed = sourceSheet.getUsedRange();
+  if (!sourceUsed) throw new Error("Source sheet has no data.");
 
-  af.clearCriteria();
-  af.apply(fr, discussionNeeded,                { filterOn: ExcelScript.FilterOn.values, values: [flagValue]   });
-  af.apply(fr, discussionMc2LeaderColIdx, { filterOn: ExcelScript.FilterOn.values, values: [personName]  });
+  const allValues  = sourceUsed.getValues()        as (string | number | boolean)[][];
+  const allFormats = sourceUsed.getNumberFormats() as string[][];
 
-  const group1 = collectVisible(sourceSheet);       // includes header row
+  // ── 4. Group 1 — discussionNeeded = Y  AND  discussionMc2Leader = personName
+  const group1Rows = filterRows(allValues, allFormats, [
+    row => row[discussionNeeded]          === flagValue,
+    row => String(row[discussionMc2LeaderColIdx]).trim() === personName,
+  ]);
+  // Prepend header row
+  const group1 = {
+    values:  [allValues[0],  ...group1Rows.values],
+    formats: [allFormats[0], ...group1Rows.formats],
+  };
 
-  // ── 4. Group 2 — mc2leader = personName  AND  discussionMc2Leader ≠ personName ──
-  af.clearCriteria();
-  af.apply(fr, discussionNeeded, { filterOn: ExcelScript.FilterOn.values, values: [flagValue] });
-  af.apply(fr, mc2leaderColIdx,           { filterOn: ExcelScript.FilterOn.values, values: [personName] });
-  af.apply(fr, discussionMc2LeaderColIdx, { filterOn: ExcelScript.FilterOn.custom, criterion1: `<>${personName}` });
+  // ── 5. Group 2 — discussionNeeded = Y  AND  mc2leader = personName
+  //                AND  discussionMc2Leader ≠ personName ──────────────────────
+  const group2 = filterRows(allValues, allFormats, [
+    row => row[discussionNeeded]                         === flagValue,
+    row => String(row[mc2leaderColIdx]).trim()           === personName,
+    row => String(row[discussionMc2LeaderColIdx]).trim() !== personName,
+  ], true); // skip header — already included via group1
 
-  const group2 = collectVisible(sourceSheet, true); // skips header row (already in group1)
-
-  af.clearCriteria();
-
-  // ── 5. Write output — Group 1 then Group 2, guaranteed no blank rows ───────
+  // ── 6. Write combined output ──────────────────────────────────────────────
   safeDelete(outputName);
   const outputSheet = workbook.addWorksheet(outputName);
-  writeData(group1, outputSheet);               // header + Group 1 data rows
-  writeData(group2, outputSheet, true);         // Group 2 data rows appended immediately after
+  writeData(group1, outputSheet);
+  writeData(group2, outputSheet, true);
 
-  // ── 6. Delete source sheet ────────────────────────────────────────────────
+  // ── 7. Delete source sheet ────────────────────────────────────────────────
   safeDelete("Data Pull");
 
-  // ── 7. Activate output ────────────────────────────────────────────────────
+  // ── 8. Keep only required governance columns (header-driven) ──────────────
+  const requiredHeaders = [
+    "Issue MC-2",
+    "Issue ID",
+    "Issue Name",
+    "Source",
+    "MC-3 Name",
+    "Issue Status",
+    "issue date opened",
+    "Issue Due Date",
+    "MAP MC2",
+    "MAP Owner",
+    "MAP Status",
+    "MAP ID",
+    "MAP Name",
+    "MAP opened date",
+    "MAP Due Date",
+    "AP Status2",
+    "Summary Update",
+    "Finalized MAP Date",
+    "Issue – Farthest date"
+  ];
+
+  const used = outputSheet.getUsedRange();
+  if (!used) throw new Error("Output sheet has no data.");
+
+  const outValues = used.getValues() as (string | number | boolean)[][];
+  const colIndexMap = new Map<string, number>();
+  (outValues[0] as string[]).forEach((h, i) => colIndexMap.set(String(h).trim(), i));
+
+  const trimmed: (string | number | boolean)[][] = [requiredHeaders];
+  for (let r = 1; r < outValues.length; r++) {
+    trimmed.push(
+      requiredHeaders.map(h => {
+        const idx = colIndexMap.get(h);
+        return idx !== undefined ? outValues[r][idx] : "";
+      })
+    );
+  }
+
+  outputSheet.getUsedRange()?.clear(ExcelScript.ClearApplyTo.all);
+  outputSheet.getRangeByIndexes(0, 0, trimmed.length, trimmed[0].length).setValues(trimmed);
+
+  // ── 9. Re-apply date formatting ───────────────────────────────────────────
+  const finalUsed = outputSheet.getUsedRange();
+  if (!finalUsed) return;
+
+  const finalHeaderIndex = new Map<string, number>();
+  (finalUsed.getRow(0).getValues()[0] as string[]).forEach((h, i) => {
+    finalHeaderIndex.set(normalizeHeader(String(h)), i);
+  });
+
+  for (const header of dateColumns) {
+    const colIdx = finalHeaderIndex.get(normalizeHeader(header));
+    if (colIdx === undefined) continue;
+    outputSheet
+      .getRangeByIndexes(1, colIdx, finalUsed.getRowCount() - 1, 1)
+      .setNumberFormat("mm/dd/yyyy");
+  }
+
   outputSheet.activate();
 }
-
-
